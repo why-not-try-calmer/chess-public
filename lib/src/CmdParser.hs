@@ -27,7 +27,7 @@ newtype NominateReferee = Referee T.Text
 newtype AMove = AMove T.Text
 data Assignment = ToBlack T.Text | ToWhite T.Text
 newtype Remove = RemoveCmd T.Text
-data Cmd = Start RoomType | Setup (TimeUnit, Side) | JoinTeam Side | NominateReferee T.Text | SubmitMove AMove | SubmitPreMoves [AMove] | Info | Resign | NominateSub T.Text | Assign Assignment | Remove T.Text | Abort | Restore
+data Cmd = AutoStart | Start RoomType | Setup (TimeUnit, Side) | JoinTeam Side | NominateReferee T.Text | SubmitMove AMove | SubmitPreMoves [AMove] | Info | Resign | NominateSub T.Text | Assign Assignment | Remove T.Text | Abort | Restore
 data ParseError = NoParse T.Text | ParserNotImplemented T.Text | UserNotFound T.Text | TimeElapsed T.Text | BadArgs T.Text | OnlyGroupSuper
 data TimeUnit = Minutes Int | Hours Int | Days Int deriving (Show)
 
@@ -78,6 +78,7 @@ parseCmd msg = parseCmd . split . contents $ msg
                         Right c  -> Right $ Setup (duration, c)
         parseCmd [] = Left . NoParse $ mempty
         parseCmd (cw:rest)
+            |   cw == "/start" = Right AutoStart
             |   cw == "/new" = case ctype msg of
                     Group      -> Right $ Start Priv
                     Supergroup -> Right $ Start Pub
@@ -113,7 +114,7 @@ parseCmd msg = parseCmd . split . contents $ msg
             |   cw == "/restore" = Right Restore
             |   otherwise  = Left . NoParse . contents $ msg
 
-data EvaluateError = AlreadyGameInChat | GameDoesNotExist | NotPlayer Int | IllegalMove T.Text | EvaluateNotImplemented T.Text | GameStatusDoesNotFit | GameNotStarted | GameFinished Result | UnableToRestore T.Text
+data EvaluateError = AlreadyGameInChat | GameDoesNotExist | NotPlayer Int | IllegalMove T.Text | NotYourTurn | EvaluateNotImplemented T.Text | GameStatusDoesNotFit | GameNotStarted | GameFinished Result | UnableToRestore T.Text
 
 renderEvaluateError :: EvaluateError -> T.Text
 renderEvaluateError AlreadyGameInChat = "There is already a game in this chat, you chess-hungry opportunist."
@@ -125,6 +126,7 @@ renderEvaluateError GameStatusDoesNotFit = "What you're trying to do cannot be d
 renderEvaluateError GameNotStarted = "The game has not started yet."
 renderEvaluateError (GameFinished result) = renderResult result
 renderEvaluateError (UnableToRestore txt) = T.append "Unable to restore for this reason: " txt
+renderEvaluateError NotYourTurn = "It is not your turn to play."
 
 nowTheGames :: Bot (UTCTime, Games)
 nowTheGames = ask >>= \env -> liftIO $ getCurrentTime >>= \now -> pure (now, memstore env)
@@ -133,34 +135,33 @@ finishRight :: MonadIO m => m (Either a ())
 finishRight = pure (Right ())
 
 evaluateCmd :: Cmd -> Message -> Bot (Either EvaluateError ())
-evaluateCmd (SubmitMove (AMove move)) msg =
-    let cid = chat_id . chat $ msg
+evaluateCmd Abort msg = do
+    let reply = "Game aborted successfully."
+        cid = chat_id . chat $ msg
         uid = maybe 0 user_id (from msg)
-    in do
     env <- ask
-    (now, mvar) <- nowTheGames
+    (_, mvar) <- nowTheGames
     hmap <- liftIO $ readMVar mvar
     case HMS.lookup cid hmap of
-        Nothing -> pure . Left $ GameDoesNotExist
         Just game -> case status game of
-            InPreparation -> pure . Left $ GameNotStarted
             Started ->
-                let is_player = uid `elem` (whitePlayers game ++ blackPlayers game)
-                    has_colour = if uid `elem` whitePlayers game then W else B
-                in  if not is_player then pure . Left . NotPlayer $ uid
-                    else case tryMove (lastPosition game) move of
-                Left err -> sendMessage cid (renderChessError err) (token env) >> finishRight
-                Right (move@(Move mv), fen@(FEN new_fen)) ->
-                    let new_state = game { lastMove = Just move, lastPosition = Just fen, lastSidePlayed = Just has_colour }
-                        updated_map = HMS.update (\_ -> Just new_state) cid hmap
-                    in  liftIO $ concurrently_
-                            (modifyMVar_ mvar (\_ -> pure updated_map)
-                                >> sendMessage cid ("Thanks for this move: " `T.append` mv) (token env)
-                            )
-                            (reqCallCFunc (token env) (endpoint env) $ SVGToPNG cid (Just mv) new_fen)
-                        >> finishRight
-            Finished res -> pure . Left $ GameFinished res
-            _ -> pure . Left . EvaluateNotImplemented $ "Ready status not implemented yet."
+                let reply = "Cannot abort an ongoing game. Have one player '/resign' instead."
+                in  sendMessage cid reply (token env) >> finishRight
+            Finished res -> sendMessage cid (renderResult res) (token env) >> finishRight
+            _ ->
+                let deleted = HMS.delete cid hmap
+                in  if uid `notElem` (whitePlayers game ++ blackPlayers game) then pure . Left . NotPlayer $ uid else do
+                    liftIO $ concurrently_
+                        (modifyMVar_ mvar (\_ -> pure deleted))
+                        (sendMessage cid reply (token env))
+                    >> finishRight
+        Nothing -> sendMessage cid (renderEvaluateError GameDoesNotExist) (token env) >> finishRight
+evaluateCmd AutoStart msg = do
+    let cid = chat_id . chat $ msg
+        reply = "This bot can only be used from within a private chat. Create such a chat first, and then invite the bot along with a friend."
+    env <- ask
+    sendMessage cid reply (token env)
+    finishRight
 evaluateCmd Info msg = do
     let cid = chat_id . chat $ msg
     env <- ask
@@ -198,36 +199,62 @@ evaluateCmd (Start Priv) msg = do
             sendMessageKeyboard cid reply (token env) (inlineKeyboards $ keyboard state)
             liftIO $ modifyMVar_ mvar (\_ -> pure updated_map)
             >> finishRight
-evaluateCmd Abort msg = do
-    let reply = "Game aborted successfully."
-        cid = chat_id . chat $ msg
+evaluateCmd (SubmitMove (AMove move)) msg =
+    let cid = chat_id . chat $ msg
         uid = maybe 0 user_id (from msg)
+    in do
     env <- ask
-    (_, mvar) <- nowTheGames
+    let tok = token env
+    (now, mvar) <- nowTheGames
     hmap <- liftIO $ readMVar mvar
     case HMS.lookup cid hmap of
-        Just game ->
-            let deleted = HMS.delete cid hmap
-            in  if uid `notElem` (whitePlayers game ++ blackPlayers game) then pure . Left . NotPlayer $ uid else do
-                liftIO $ modifyMVar_ mvar (\_ -> pure deleted)
-                sendMessage cid reply (token env)
-                >> finishRight
-        Nothing -> sendMessage cid (renderEvaluateError GameDoesNotExist) (token env) >> finishRight
+        Nothing -> pure . Left $ GameDoesNotExist
+        Just game -> case status game of
+            InPreparation -> pure . Left $ GameNotStarted
+            Started ->
+                let is_player = uid `elem` (whitePlayers game ++ blackPlayers game)
+                    has_colour = if uid `elem` whitePlayers game then W else B
+                    doMove = case tryMove (lastPosition game) move of
+                        Left err -> sendMessage cid (renderChessError err) tok >> finishRight
+                        Right (move@(Move mv), fen@(FEN new_fen)) ->
+                            let new_state = game { lastMove = Just move, lastPosition = Just fen, lastSidePlayed = Just has_colour }
+                                updated_map = HMS.update (\_ -> Just new_state) cid hmap
+                            in  liftIO $ mapConcurrently_ id [
+                                    modifyMVar_ mvar (\_ -> pure updated_map) >> sendMessage cid ("Thanks for this move: " `T.append` mv) tok,
+                                    void $ reqCallCFunc tok (endpoint env) $ SVGToPNG cid (Just mv) new_fen,
+                                    saveGame (pipe env) cid new_state
+                                    ] >> finishRight
+                in  if not is_player then pure . Left . NotPlayer $ uid else case lastSidePlayed game of
+                        Nothing -> if has_colour == B then sendMessage cid (renderEvaluateError NotYourTurn) tok >> finishRight else doMove
+                        Just W -> if has_colour == W then sendMessage cid (renderEvaluateError NotYourTurn) tok >> finishRight else doMove
+                        Just B -> if has_colour == B then sendMessage cid (renderEvaluateError NotYourTurn) tok >> finishRight else doMove
+            Finished res -> pure . Left $ GameFinished res
+            _ -> pure . Left . EvaluateNotImplemented $ "Ready status not implemented yet."
 evaluateCmd Resign msg = do
     let cid = chat_id . chat $ msg
+        uid = maybe 0 user_id (from msg)
     env <- ask
+    let tok = token env
     (_, mvar) <- nowTheGames
     hmap <- liftIO $ readMVar mvar
     case HMS.lookup cid hmap of
         Just game -> case status game of
             Started ->
-                let (new_status, reply) = if Just B == lastSidePlayed game then
-                        let res = Finished WhiteResigned in (res, renderResult WhiteResigned )
-                    else
-                        let res = Finished BlackResigned in (res, renderResult BlackResigned)
-                    updated_map = HMS.update (\_ -> Just game { status = new_status }) cid hmap in do
-                    liftIO $ modifyMVar_ mvar (\_ -> pure updated_map)
-                    sendMessage cid reply (token env) >> finishRight
+                let is_player = uid `elem` (whitePlayers game ++ blackPlayers game)
+                    has_colour = if uid `elem` whitePlayers game then W else B
+                    has_turn = maybe False (has_colour /=) $ lastSidePlayed game
+                    new_status = if has_colour == W then Finished WhiteResigned else Finished BlackResigned
+                    updated_game = game { status = new_status }
+                    updated_map = HMS.update (\_ -> Just updated_game) cid hmap
+                    black_or_white = if has_colour == W then "White" else "Black"
+                    rev_black_or_white = if has_colour == B then "White" else "Black"
+                    reply = black_or_white `T.append` " has resigned! Congratulation to " `T.append` rev_black_or_white
+                in  if not (is_player && has_turn) then sendMessage cid "To resign, you must a player in an ongoing game and it must be your turn" tok >> finishRight
+                    else liftIO $ mapConcurrently_ id [
+                        modifyMVar_ mvar (\_ -> pure updated_map),
+                        sendMessage cid reply (token env),
+                        saveGame (pipe env) cid updated_game
+                        ] >> finishRight
             _ -> sendMessage cid (renderEvaluateError GameStatusDoesNotFit) (token env) >> finishRight
         Nothing -> do
             sendMessage cid (renderEvaluateError GameDoesNotExist) (token env)
@@ -239,7 +266,7 @@ evaluateCmd Restore msg = do
     let mvar = memstore env
     hmap <- liftIO . readMVar $ mvar
     case HMS.lookup cid hmap of
-        Just _ -> pure . Left . UnableToRestore $ "Game is fresh in memory already."
+        Just _ -> pure . Left . UnableToRestore $ "Game is fresh in memory already. Nothing to restore."
         Nothing -> tryRestoreGame (pipe env) cid >>= \case
             Left err -> pure . Left . UnableToRestore . renderDbError $ err
             Right game_doc -> case bsonToGame game_doc of
