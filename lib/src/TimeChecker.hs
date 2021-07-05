@@ -15,7 +15,7 @@ import           Control.Monad.IO.Class   (MonadIO (liftIO))
 import           Data.Maybe
 import qualified Data.Text                as T
 import           Data.Time
-data Alert = H1 | M30 | M15 | M5 | M1 | S30 | S10 deriving (Show)
+data Alert = H1 | M30 | M15 | M5 | M1 | S30 | S10 | Lost deriving (Show)
 
 renderAlert :: Alert -> T.Text
 renderAlert H1  = "Less than one hour left for "
@@ -25,10 +25,11 @@ renderAlert M5  = "Less than 5 minutes leftfor "
 renderAlert M1  = "Less than 1 minutes left for "
 renderAlert S30 = "Less than 30 seconds left for "
 renderAlert S10 = "Less than 10 seconds left for "
+renderAlert Lost = "Time elapsed, the game is over"
 
 countdown :: UTCTime -> UTCTime -> Maybe Alert
 countdown n tg
-    |   diffUTCTime tg n <= 1 = throw . userError $ "Boum!"
+    |   diffUTCTime tg n <= 1 = Just Lost
     |   diffUTCTime tg n < 10 = Just S10
     |   diffUTCTime tg n < 30 = Just S30
     |   diffUTCTime tg n < 60 = Just M1
@@ -60,6 +61,12 @@ checkAllTimes env = do
         now <- getCurrentTime
         hmap <- readMVar mvar
         updated <- mapConcurrently (\g -> case checkGameTime g now of
+            Just Lost ->
+                let (winner, result) = if lastSidePlayed g == Just W then ("White", BlackOvertime) else ("Black", WhiteOvertime)
+                    notification = (Just now, Just now)
+                in  do
+                    sendMessage (game_chatid g) (renderAlert Lost `T.append` winner `T.append` "just won") tok
+                    pure (g { notified = notification, status = Finished result } )
             Just H1 ->  case lastSidePlayed g of
                 Just W ->
                     let (sideToPlay, sideToPlay_txt) = (B, "Black")
@@ -80,6 +87,7 @@ checkAllTimes env = do
                 in  do
                     sendMessage (game_chatid g) (renderAlert M5 `T.append` "White to make their  first move, hurry up!") tok
                     pure g
+            Nothing -> pure g
             _ -> pure g
             ) hmap
         modifyMVar_ mvar (\_ -> pure updated)
