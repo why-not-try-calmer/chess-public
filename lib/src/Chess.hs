@@ -115,7 +115,7 @@ renderResult :: Result -> T.Text
 renderResult WhiteResigned = "White has just resigned! Congratulations to Black!"
 renderResult BlackResigned = "Black has just resigned! Congratulations to White!"
 renderResult WhiteIsMate = "White are mate! Congratulations to Black!"
-renderResult BlackIsMate = "White are mate! Congratulations to White!"
+renderResult BlackIsMate = "Black are mate! Congratulations to Black!"
 renderResult _ = "This result has not been implemented yet."
 
 tryMove :: Maybe FEN -> T.Text -> Either ChessError (Move, FEN)

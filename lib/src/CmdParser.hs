@@ -29,11 +29,12 @@ newtype AMove = AMove T.Text
 data Assignment = ToBlack T.Text | ToWhite T.Text
 newtype Remove = RemoveCmd T.Text
 data Cmd = AutoStart | Start RoomType | Setup (TimeUnit, Side) | JoinTeam Side | NominateReferee T.Text | SubmitMove AMove | SubmitPreMoves [AMove] | Info | Resign | NominateSub T.Text | Assign Assignment | Remove T.Text | Abort | Restore
-data ParseError = NoParse T.Text | ParserNotImplemented T.Text | UserNotFound T.Text | TimeElapsed T.Text | BadArgs T.Text | OnlyGroupSuper
+data ParseError = EmptyMessage | NoParse T.Text | ParserNotImplemented T.Text | UserNotFound T.Text | TimeElapsed T.Text | BadArgs T.Text | OnlyGroupSuper
 data TimeUnit = Minutes Int | Hours Int | Days Int deriving (Show)
 
 renderParseErrors :: ParseError -> T.Text
 renderParseErrors (NoParse imp) = T.append "No available parse for this input: " imp
+renderParseErrors EmptyMessage = "This command requires an argument, but the text sent was empty."
 renderParseErrors (ParserNotImplemented imp) = T.append "Not implemented: " imp
 renderParseErrors (UserNotFound imp) = T.append "Some user(s) could not be found:  " imp
 renderParseErrors (TimeElapsed imp) = T.append "The time window has closed already, you cannot do this: " imp
@@ -108,9 +109,7 @@ parseCmd msg = parseCmd . split . contents $ msg
             |   cw == "/remove" =
                     let [toRemove] = rest
                     in  Right . Remove $ toRemove
-            |   cw == "/move" =
-                    let [move] = rest
-                    in Right . SubmitMove $ AMove move
+            |   cw == "/move" = if null rest then Left EmptyMessage else Right . SubmitMove . AMove . head $ rest
             |   cw == "/premove" = Right . SubmitPreMoves $ AMove <$> rest
             |   cw == "/restore" = Right Restore
             |   otherwise  = Left . NoParse . contents $ msg
@@ -171,7 +170,10 @@ evaluateCmd Info msg = do
         Nothing ->
             let reply = "No ongoing game in this chat " `T.append` "(" `T.append` (T.pack . show $ cid) `T.append` ")"
             in  sendMessage cid reply (token env) >> finishRight
-        Just game -> sendMessage cid (T.pack . show $ game) (token env) >> finishRight
+        Just game ->
+            let fields = map T.pack [show $ createdOn game, show $ roomType game, show $ status game, show $ lastMove game, show $ lastPosition game, show $ timeforMoves game]
+                reply = T.concat $ zipWith (\val lab -> lab `T.append` ": " `T.append` val `T.append` "\n") fields ["Created on", "Room type", "Game has status", "Last move", "Last position", "Time between moves"]
+            in  sendMessage cid reply (token env) >> finishRight
 evaluateCmd (Start Pub) msg = pure . Left . EvaluateNotImplemented $ "Games in supergroups not implemented yet. Please use this bot in (private) groups." {- do
     let reply = "Okay, game set to start in this very group chat. There are 5 settings to set: the time window for joining this game, the max. duration between each move, the min. and max. number of players in each team (colour), finally the colour you will play with (if any). Please use the buttons below to set the game up."
         cid = chat_id . chat $ msg
