@@ -3,7 +3,6 @@
 
 module TimeChecker where
 
-
 import           AppTypes
 import           Chess
 import           CmdParser
@@ -72,23 +71,23 @@ checkAllTimes env = do
                     sendMessage (game_chatid g) (renderAlert Lost `T.append` name `T.append` " has just won.") tok
                     pure (g { notified = notification, status = Finished reason } )
             Just H1 ->
-                let (toPlay, toPlay_txt, notification) = let (notified_w, notified_b) = notified g in if lastSidePlayed g == Just W then (B, "Black", (notified_w, H1 : notified_b)) else (W, "White", (H1 : notified_w, notified_b))
-                in  if isNothing $ lastSidePlayed g then pure g else do
+                let (toPlay, toPlay_txt, notification) = getNotification g H1
+                in  if (isNothing . lastSidePlayed $ g) || H1 `elem` colourAlerts g toPlay then pure g else do
                     sendMessage (game_chatid g) (renderAlert H1 `T.append` toPlay_txt `T.append` " to make their move, hurry up!") tok
                     pure $ g { notified = notification }
             Just M15 ->
-                let (toPlay, toPlay_txt, notification) = let (notified_w, notified_b) = notified g in if lastSidePlayed g == Just W then (B, "Black", (notified_w, M15 : notified_b)) else (W, "White", (M15 : notified_w, notified_b))
-                in  if isNothing $ lastSidePlayed g then pure g else do
+                let (toPlay, toPlay_txt, notification) = getNotification g M15
+                in  if (isNothing . lastSidePlayed $ g) || M15 `elem` colourAlerts g toPlay then pure g else do
                     sendMessage (game_chatid g) (renderAlert M15 `T.append` toPlay_txt `T.append` " to make their move, hurry up!") tok
                     pure $ g { notified = notification }
             Just M5 ->
-                let (toPlay, toPlay_txt, notification) = let (notified_w, notified_b) = notified g in if lastSidePlayed g == Just W then (B, "Black", (notified_w, M5 : notified_b)) else (W, "White", (M5 : notified_w, notified_b))
-                in  if isNothing $ lastSidePlayed g then pure g else do
+                let (toPlay, toPlay_txt, notification) = getNotification g M5
+                in  if (isNothing . lastSidePlayed $ g) || M5`elem` colourAlerts g toPlay then pure g else do
                     sendMessage (game_chatid g) (renderAlert M5 `T.append` toPlay_txt `T.append` " to make their move, hurry up!") tok
                     pure $ g { notified = notification }
             Just M1 ->
-                let (toPlay, toPlay_txt, notification) = let (notified_w, notified_b) = notified g in if lastSidePlayed g == Just W then (B, "Black", (notified_w, M1 : notified_b)) else (W, "White", (M1 : notified_w, notified_b))
-                in  if isNothing $ lastSidePlayed g then pure g else do
+                let (toPlay, toPlay_txt, notification) = getNotification g M1
+                in  if (isNothing . lastSidePlayed $ g) || M1 `elem` colourAlerts g toPlay then pure g else do
                     sendMessage (game_chatid g) (renderAlert M1 `T.append` toPlay_txt `T.append` " to make their move, hurry up!") tok
                     pure $ g { notified = notification }
             Nothing -> pure g
@@ -97,6 +96,12 @@ checkAllTimes env = do
         modifyMVar_ mvar (\_ -> pure updated)
         liftIO $ print "checkAllTimes: Sleeping for 5 minutes."
         threadDelay 300000000
+    where
+        getNotification game alert =
+            let (notified_w, notified_b) = notified game
+            in  if lastSidePlayed game == Just W then (B, "Black", (notified_w, alert : notified_b)) else (W, "White", (alert : notified_w, notified_b))
+        colourAlerts game W = fst $ notified game
+        colourAlerts game B = snd $ notified game
 
 {-
 --

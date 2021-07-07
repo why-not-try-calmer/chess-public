@@ -24,6 +24,7 @@ import           Keyboards                    hiding (B, Side, W)
 import           Network.HTTP.Req
 import           TgramAPIJson
 import           TgramAPITypes
+
 newtype NominateReferee = Referee T.Text
 newtype AMove = AMove T.Text
 data Assignment = ToBlack T.Text | ToWhite T.Text
@@ -275,7 +276,10 @@ evaluateCmd (SubmitMove (AMove move)) msg =
                     doMove = case tryMove (lastPosition game) move of
                         Left err -> sendMessage cid (renderChessError err) tok >> finishRight
                         Right (move@(Move mv), fen@(FEN new_fen)) ->
-                            let new_state = game { lastTimeMoved = Just now, lastMove = Just move, lastPosition = Just fen, lastSidePlayed = Just has_colour }
+                            let new_alerts =
+                                    let (white_notified, black_notified) = notified game
+                                    in  if has_colour == W then (mempty, black_notified) else (white_notified, mempty)
+                                new_state = game { notified = new_alerts, lastTimeMoved = Just now, lastMove = Just move, lastPosition = Just fen, lastSidePlayed = Just has_colour }
                                 updated_map = HMS.update (\_ -> Just new_state) cid hmap
                                 detect_checkmate = case fromFEN (T.unpack new_fen) of
                                     Nothing  -> False

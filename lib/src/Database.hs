@@ -169,29 +169,3 @@ removeAllGames pipe = runMongo pipe $ deleteAll "games" [([], mempty)] >>= eithe
 
 removeThisGame :: MonadIO m => Pipe -> Int64 -> m ()
 removeThisGame pipe cid = runMongo pipe $ deleteOne (select ["game_chatid" =: cid] "games")
-
-createMockGame :: Pipe -> IO ()
-createMockGame pipe = getCurrentTime >>= \now ->
-    let game = initGameState Priv now 1 1
-        votes = Just $ HMS.insert (2::Int) (Move "e2e4") HMS.empty
-        updated = game { playersVotes =  votes }
-    in  saveGame pipe 1 updated
-
-{-
-test_restore :: IO ()
-test_restore = openPipe >>= \case
-    Right pipe -> tryRestoreGame pipe 42 >>= \case
-        Left err -> print . renderDbError $ err
-        Right doc -> case bsonToGame doc of
-            Just gs -> print . show $ gs
-            Nothing -> print "Got a document, but could not parse into a valid GameState."
-    Left err   -> print . renderDbError $ err
-
-test_save :: IO ()
-test_save = getCurrentTime >>= \now -> openPipe >>= \case
-    Right pipe ->
-        let game = initGameState Priv now 7 42
-            game' = game { lastMove = Just $ Move "e6e4", lastPosition = Just $ FEN "bliblablo", whitePlayers = [1,2,3] }
-        in  saveGame pipe 42 game'
-    Left err -> print . renderDbError $ err
--}
