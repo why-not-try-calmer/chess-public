@@ -150,7 +150,7 @@ evaluateCmd Abort msg = do
             Finished res -> sendMessage cid (renderResult res) (token env) >> finishRight
             _ ->
                 let deleted = HMS.delete cid hmap
-                in  if uid `notElem` (whitePlayers game ++ blackPlayers game) then pure . Left . NotPlayer $ uid else do
+                in  if uid `notElem` (whitePlayers game ++ blackPlayers game) || uid `notElem` referees game then pure . Left . NotPlayer $ uid else do
                     liftIO $ concurrently_
                         (modifyMVar_ mvar (\_ -> pure deleted))
                         (sendMessage cid reply (token env))
@@ -171,8 +171,15 @@ evaluateCmd Info msg = do
             let reply = "No ongoing game in this chat " `T.append` "(" `T.append` (T.pack . show $ cid) `T.append` ")"
             in  sendMessage cid reply (token env) >> finishRight
         Just game ->
-            let fields = map T.pack [show $ createdOn game, show $ roomType game, show $ status game, show $ lastMove game, show $ lastPosition game, show $ timeforMoves game]
-                reply = T.concat $ zipWith (\val lab -> lab `T.append` ": " `T.append` val `T.append` "\n") fields ["Created on", "Room type", "Game has status", "Last move", "Last position", "Time between moves"]
+            let fields = [
+                    T.pack . show $ createdOn game,
+                    case roomType game of Priv -> "Private chat"; Pub -> "Public chat",
+                    T.pack . show $ status game,
+                    maybe "No last move" (\(Move mv) -> mv) (lastMove game),
+                    maybe mempty (\(FEN fen) -> fen) (lastPosition game),
+                    maybe mempty (T.pack . show) (timeforMoves game)
+                    ]
+                reply = T.concat $ zipWith (\val lab -> lab `T.append` ": " `T.append` val `T.append` "\n") fields ["Created on", "Room type", "Game has status", "Last move", "Last position", "Time between moves (in seconds)"]
             in  sendMessage cid reply (token env) >> finishRight
 evaluateCmd (Start Pub) msg = pure . Left . EvaluateNotImplemented $ "Games in supergroups not implemented yet. Please use this bot in (private) groups." {- do
     let reply = "Okay, game set to start in this very group chat. There are 5 settings to set: the time window for joining this game, the max. duration between each move, the min. and max. number of players in each team (colour), finally the colour you will play with (if any). Please use the buttons below to set the game up."
@@ -193,15 +200,12 @@ evaluateCmd (Start Priv) msg = do
     env <- ask
     (now, mvar) <- nowTheGames
     hmap <- liftIO $ readMVar mvar
-    case HMS.lookup cid hmap of
-        Just game -> sendMessage cid (renderEvaluateError AlreadyGameInChat) (token env)
-            >> finishRight
-        Nothing   ->
-            let state = initGameState Priv now uid cid; updated_map = HMS.insert cid state hmap
-            in do
-            sendMessageKeyboard cid reply (token env) (inlineKeyboards $ keyboard state)
-            liftIO $ modifyMVar_ mvar (\_ -> pure updated_map)
-            >> finishRight
+    let exists = maybe False (\g -> case status g of Finished _ -> False; _ -> True) (HMS.lookup cid hmap)
+    if exists then sendMessage cid (renderEvaluateError AlreadyGameInChat) (token env) >> finishRight
+    else let state = initGameState Priv now uid cid; updated_map = HMS.insert cid state hmap in do
+        sendMessageKeyboard cid reply (token env) (inlineKeyboards $ keyboard state)
+        liftIO $ modifyMVar_ mvar (\_ -> pure updated_map)
+        finishRight
 evaluateCmd Resign msg = do
     let cid = chat_id . chat $ msg
         uid = maybe 0 user_id (from msg)
@@ -246,13 +250,13 @@ evaluateCmd Restore msg = do
                 Just restored ->
                     let (Just (Move mv)) = lastMove restored
                         (Just (FEN fen)) = lastPosition restored
-                        updated_hmap = HMS.update (\_ -> Just restored) cid hmap
+                        inserted_hmap = HMS.insert cid restored hmap
                         svg = SVGToPNG cid (Just mv) fen
                     in  if uid `notElem` (whitePlayers restored ++ blackPlayers restored) then pure . Left . NotPlayer $ uid else do
                         liftIO $ concurrently_
-                            (modifyMVar_ mvar $ \_ -> pure updated_hmap)
+                            (modifyMVar_ mvar $ \_ -> pure inserted_hmap)
                             (reqCallCFunc (token env) (endpoint env) svg)
-                        pure $ Right ()
+                        finishRight
 evaluateCmd (SubmitMove (AMove move)) msg =
     let cid = chat_id . chat $ msg
         uid = maybe 0 user_id (from msg)
@@ -271,7 +275,7 @@ evaluateCmd (SubmitMove (AMove move)) msg =
                     doMove = case tryMove (lastPosition game) move of
                         Left err -> sendMessage cid (renderChessError err) tok >> finishRight
                         Right (move@(Move mv), fen@(FEN new_fen)) ->
-                            let new_state = game { lastMove = Just move, lastPosition = Just fen, lastSidePlayed = Just has_colour }
+                            let new_state = game { lastTimeMoved = Just now, lastMove = Just move, lastPosition = Just fen, lastSidePlayed = Just has_colour }
                                 updated_map = HMS.update (\_ -> Just new_state) cid hmap
                                 detect_checkmate = case fromFEN (T.unpack new_fen) of
                                     Nothing  -> False

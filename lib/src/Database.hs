@@ -4,19 +4,19 @@
 
 module Database where
 
-import           Prelude                        hiding (lookup)
-import qualified Data.Text as T
+import           Chess
+import           Control.Exception
+import           Control.Monad.IO.Class
+import           Data.Foldable
+import qualified Data.HashMap.Strict            as HMS
+import           Data.Int                       (Int64)
+import           Data.Maybe                     (fromMaybe)
+import qualified Data.Text                      as T
+import           Data.Time
+import           Database.MongoDB
 import qualified Database.MongoDB.Transport.Tls as DbTLS
-import Control.Exception
-import Database.MongoDB
-import Control.Monad.IO.Class
-import Chess
-import Data.Int (Int64)
-import Data.Time
-import qualified Data.HashMap.Strict as HMS
-import Data.Maybe (fromMaybe)
-import Keyboards hiding (W, B)
-import Data.Foldable
+import           Keyboards                      hiding (B, W)
+import           Prelude                        hiding (lookup)
 
 data MongoCreds = MongoCreds {
     shard :: String,
@@ -29,7 +29,7 @@ initMongCredsFrom :: T.Text -> MongoCreds
     FIX ME: MongoAtlas tends to shuffle around the role of 'primary' versus 'secondary' shard
     Make sure to call selectOK to avoid failing to authenticate
 -}
-initMongCredsFrom txt = 
+initMongCredsFrom txt =
     let [host_name, db_name, password] = T.splitOn ":" txt
     in  MongoCreds (T.unpack host_name) db_name password
 
@@ -66,10 +66,8 @@ gameToBson g@GameState{..} =
                 as_tuples = maybe mempty (map ((\(Move mv, i) -> (mv, i :: Int)) . swap) . HMS.toList) playersVotes
             in  foldl' (\acc (l, v) -> (l =: v) : acc) mempty as_tuples
         notified' =
-            let (mbnotified_w, mbnotified_b) = notified
-                notified_w = maybe mempty (T.pack . show) mbnotified_w
-                notified_b = maybe mempty (T.pack . show) mbnotified_b
-            in  ["notified_white" =: notified_w, "notified_black" =: notified_b]
+            let (notified_white, notified_black) = let (w, b) = notified in (map (T.pack . show) w, map (T.pack . show) b)
+            in  ["notified_white" =: notified_white, "notified_black" =: notified_black]
         room_type = T.pack . show $ roomType
     in  [
             "last_move" =: move,
@@ -146,11 +144,19 @@ bsonToGame doc =
         game_chatid = fromMaybe undefined (lookup "game_chatid" doc :: Maybe Int64)
         notified =
             let subdoc = fromMaybe undefined (lookup "notified" doc :: Maybe Document)
-                notified_w = fromMaybe mempty (lookup "notified_white" subdoc :: Maybe T.Text)
-                notified_b = fromMaybe mempty (lookup "notified_black" subdoc :: Maybe T.Text)
-                notified_w' = if T.null notified_w then Nothing else Just . parseToLocale . T.unpack $ notified_w
-                notified_b' = if T.null notified_b then Nothing else Just . parseToLocale . T.unpack $ notified_b
-            in  (notified_b', notified_w')
+                notified_w = fromMaybe mempty (lookup "notified_white" subdoc :: Maybe [T.Text])
+                notified_b = fromMaybe mempty (lookup "notified_black" subdoc :: Maybe [T.Text])
+                parseAlert v
+                    | v == "H1" = Just H1
+                    | v == "M30" = Just M30
+                    | v == "M15" = Just M15
+                    | v == "M5" = Just M5
+                    | v == "M1" = Just M1
+                    | v == "S30" = Just S30
+                    | v == "S10" = Just S10
+                    | v == "Lost" = Just Lost
+                    | otherwise = Nothing
+            in  (fromMaybe mempty $ traverse parseAlert notified_w, fromMaybe mempty $ traverse parseAlert notified_b)
         room_type = maybe undefined (\v -> if v == "Priv" then Priv else Pub) (lookup "room_type" doc :: Maybe T.Text)
         keyboard = case room_type of Priv -> PrivK mempty mempty mempty mempty; Pub -> PubK mempty mempty mempty mempty mempty mempty mempty
     in  Just $ GameState last_move last_position last_side_played last_time_moved created_on time_before_start time_between_moves max_players min_players white_players black_players referees status players_votes game_chatid notified keyboard room_type

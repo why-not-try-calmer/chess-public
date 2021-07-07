@@ -10,6 +10,7 @@ import           AppTypes
 import           Chess
 import           CmdParser
 import           Control.Concurrent
+import           Control.Concurrent.Async (async)
 import           Control.Exception
 import           Control.Monad.Reader
 import qualified Data.HashMap.Strict      as HMS
@@ -22,7 +23,12 @@ import           Servant
 import           System.Environment
 import           TgramAPITypes
 import           TimeChecker
-type BotAPI = "bot_webhook" :> ReqBody '[JSON] Update :> Post '[JSON] ()
+
+type BotAPI =
+    "bot_webhook" :> ReqBody '[JSON] Update :> Post '[JSON] () :<|>
+    "warmup" :> Get '[JSON] ()
+
+data Userx
 
 botApi :: Proxy BotAPI
 botApi = Proxy
@@ -34,7 +40,7 @@ runBotServer :: BotConfig -> Server BotAPI
 runBotServer config = hoistServer botApi (flip runReaderT config . runBot) botServer
 
 botServer :: ServerT BotAPI Bot
-botServer = bot_webhook where
+botServer = bot_webhook :<|> warmup where
     bot_webhook :: Update -> Bot ()
     bot_webhook update = ask >>= \env ->
         case callback_query update of
@@ -42,6 +48,8 @@ botServer = bot_webhook where
         Nothing -> case message update of
             Just msg -> handleMessage msg
             Nothing  -> throwError err400
+    warmup :: Bot ()
+    warmup = pure ()
 
 handleMessage :: Message -> Bot ()
 handleMessage msg =
@@ -97,5 +105,12 @@ startApp = do
                     mongoCreds = mongoCreds
                 }
             in  do
-                runCheckAllGames config
+                _ <- timeWorker config
                 run port . app $ config
+    where
+        timeWorker config = async (forever $ checkAllTimes config) `catch` \e ->
+            let caught_txt = "Exception caught"
+                restart_txt = "\nRestarting check time worker now..."
+            in  do
+                print $ caught_txt ++ show (e :: SomeException) ++ restart_txt
+                timeWorker config

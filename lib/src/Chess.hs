@@ -55,6 +55,7 @@ renderStatus (Finished res)
     | otherwise = "unknown status"
 
 data Side = B | W deriving (Eq, Show)
+data Alert = H1 | M30 | M15 | M5 | M1 | S30 | S10 | Lost deriving (Eq, Show)
 
 data GameState = GameState {
     lastMove        :: Maybe Move,
@@ -72,7 +73,7 @@ data GameState = GameState {
     status          :: Status,
     playersVotes    :: Maybe (HMS.HashMap Int Move), -- only in pub games
     game_chatid     :: Int64,
-    notified        :: (Maybe UTCTime, Maybe UTCTime), -- White, black
+    notified        :: ([Alert], [Alert]), -- alerts for W, B
     keyboard        :: Keyboard,
     roomType        :: RoomType
 } deriving (Show)
@@ -100,8 +101,8 @@ labels = [
     ]
 
 initGameState :: RoomType -> UTCTime -> Int -> Int64 -> GameState
-initGameState Pub now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid (Nothing, Nothing) makePubStartKeyboard Pub
-initGameState Priv now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid (Nothing, Nothing) makePrivStartKeyboard Priv
+initGameState Pub now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid mempty makePubStartKeyboard Pub
+initGameState Priv now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid mempty makePrivStartKeyboard Priv
 
 renderChessError :: ChessError -> T.Text
 renderChessError (ErrorBadParse (BadParse txt)) = "Unable to parse this move request: " `T.append` txt
