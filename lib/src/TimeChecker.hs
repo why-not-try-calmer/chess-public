@@ -15,7 +15,7 @@ import           Data.Int                 (Int64)
 import           Data.Maybe
 import qualified Data.Text                as T
 import           Data.Time
-import           Database                 (saveGame)
+import           Database                 (saveAllGames, saveGame)
 
 renderAlert :: Alert -> T.Text
 renderAlert H1   = "Less than one hour left for "
@@ -65,14 +65,14 @@ checkAllTimes env = do
         let cid_alert_updated = foldl' (\acc g -> case check g now of Just updated_game -> updated_game : acc; Nothing -> acc) [] hmap
             just_updated = map (\(a,_,b) -> (a,b)) cid_alert_updated
             merged_new_old = HMS.union (HMS.fromList just_updated) hmap
+        concurrently_ (modifyMVar_ mvar (\_ -> pure merged_new_old))(saveAllGames p just_updated)
         mapConcurrently_ (\(cid, alert, new_state) ->
             let reply = if lastSidePlayed new_state == Just W then "White" else "Black"
-                thenLost = sendMessage cid (renderAlert Lost `T.append` reply `T.append` " has just lost.") tok
+                thenLost = sendMessage cid (renderAlert Lost `T.append` reply `T.append` " won on time. Game over.") tok
                 thenTimeIsRunning = sendMessage cid (renderAlert alert `T.append` reply `T.append` " to make their move, hurry up!") tok
             in  case alert of Lost -> thenLost; _ -> thenTimeIsRunning
             ) cid_alert_updated
-        modifyMVar_ mvar (\_ -> pure merged_new_old)
-        liftIO $ print "checkAllTimes: Sleeping for 5 minutes."
+        print "checkAllTimes: Sleeping for 5 minutes."
         threadDelay 300000000
     where
         getNotification game alert =

@@ -113,7 +113,7 @@ startApp = do
                         let (games, failed) = toGames docs
                         in  do
                             print ("Failed to parse this game-documents" ++ show failed)
-                            putMVar mvar $ HMS.fromList games
+                            modifyMVar_ mvar $ \_ -> pure $ HMS.fromList games
                 -- running time control worker thread
                 _ <- timeWorker config
                 -- running Servant application
