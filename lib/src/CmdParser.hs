@@ -29,7 +29,7 @@ newtype NominateReferee = Referee T.Text
 newtype AMove = AMove T.Text
 data Assignment = ToBlack T.Text | ToWhite T.Text
 newtype Remove = RemoveCmd T.Text
-data Cmd = AutoStart | Start RoomType | Setup (TimeUnit, Side) | JoinTeam Side | NominateReferee T.Text | SubmitMove AMove | SubmitPreMoves [AMove] | Info | Resign | NominateSub T.Text | Assign Assignment | Remove T.Text | Abort | Restore
+data Cmd = AutoStart | Start RoomType | Load FEN | NominateReferee T.Text | SubmitMove AMove | SubmitPreMoves [AMove] | Info | Resign | NominateSub T.Text | Assign Assignment | Remove T.Text | Abort | Restore
 data ParseError = EmptyMessage | NoParse T.Text | ParserNotImplemented T.Text | UserNotFound T.Text | TimeElapsed T.Text | BadArgs T.Text | OnlyGroupSuper
 data TimeUnit = Minutes Int | Hours Int | Days Int deriving (Show)
 
@@ -43,82 +43,46 @@ renderParseErrors OnlyGroupSuper = "This bot can only be used in groups and supe
 renderParseErrors _ = T.append "Not implemented" mempty
 
 parseCmd :: Message -> Either ParseError Cmd
-parseCmd msg = parseCmd . split . contents $ msg
+parseCmd msg =
+    let txt = contents msg
+    in  if T.null txt then Right AutoStart else go . split $ txt
     where
-        contents m = fromMaybe
-            ("No message! Here is the full update received: " `T.append` (T.pack . show $ m))
-            (text m)
+        contents m = fromMaybe mempty $ text m
         split = T.splitOn " "
         ctype m = chat_type . chat $ m
-        parseReply txt =
-            let comma_vals = map T.strip . T.splitOn "," $ txt
-                lbreak_vals = map T.strip . T.lines $ txt
-                relevant = maximum [comma_vals, lbreak_vals]
-                getRelevant [] = Left . NoParse $ "Empty split"
-                getRelevant [time_interval, colour] = Right (time_interval, colour)
-                getRelevant _ = Left . NoParse $ "Too large split"
-                Right (time_interval, colour) = getRelevant relevant
-                val = decimal $ T.dropEnd 1 time_interval
-                unit = T.takeEnd 1 time_interval
-                getColour colour
-                    |   colour == "b" = Right B
-                    |   colour == "w" = Right W
-                    |   otherwise = Left . NoParse $ colour
-                parseUnit unit v
-                    |   unit == "m" = Right $ Minutes v
-                    |   unit == "h" = Right $ Hours v
-                    |   unit == "d" = Right $ Days v
-                    |   otherwise  = Left . NoParse $ "No parse for colour"
-            in  when (T.null txt) (Left . NoParse $ T.pack "Empty message. Service message? Here is the full message: " `T.append` (T.pack . show $ msg))
-                >>
-                if length relevant /= 2 then Left $ NoParse (T.pack $ "Input is too long" ++ show (length relevant))
-                else case val of
-                Left str    -> Left . NoParse $ T.pack str
-                Right (n,_) -> case parseUnit unit n of
-                    Left err -> Left err
-                    Right duration -> case getColour colour of
-                        Left err -> Left err
-                        Right c  -> Right $ Setup (duration, c)
-        parseCmd [] = Left . NoParse $ mempty
-        parseCmd (cw:rest)
-            |   cw == "/start" = Right AutoStart
+        go [] = Left . NoParse $ mempty
+        go (cw:rest)
+            |   cw == "/abort" = Right Abort
+            |   cw == "/assign" =
+                    let [assigned, colour] = rest
+                    in  if colour == "b" then Right . Assign . ToBlack $ assigned else Right . Assign . ToWhite $ assigned
+            |   cw == "/help" = Right AutoStart
+            |   cw == "/info" = Right Info
+            |   cw == "/load" = if null rest then Left EmptyMessage else Right . Load . FEN . head $ rest
+            |   cw == "/move" = if null rest then Left EmptyMessage else Right . SubmitMove . AMove . head $ rest
             |   cw == "/new" = case ctype msg of
                     Group      -> Right $ Start Priv
                     Supergroup -> Right $ Start Pub
                     _          -> Left OnlyGroupSuper
-            |   cw == "/join" =
-                    let [colour] = rest
-                        go arg
-                            |   arg == "b" = Right . JoinTeam $ B
-                            |   arg == "w" = Right . JoinTeam $ W
-                            |   otherwise = Left. BadArgs $ "Missing or too many arguments for '/join' "
-                    in  go colour
+            |   cw == "/premove" = Right . SubmitPreMoves $ AMove <$> rest
             |   cw == "/referee" =
                     let [appointed] = rest
                     in  Right . NominateReferee $ appointed
-            |   cw == "/info" = Right Info
-            |   cw == "/castle" = Left . ParserNotImplemented $ "/castle"
-            |   cw == "/promote" = Left . ParserNotImplemented $ "/promote"
-            |   cw == "/abort" = Right Abort
-            |   cw == "/resign" = Right Resign
-            |   cw == "/sub" =
-                    let [substitute] = rest
-                    in  Right . NominateSub $ substitute
-            |   cw == "/assign" =
-                    let [assigned, colour] = rest
-                    in  if colour == "b" then Right . Assign . ToBlack $ assigned else Right . Assign . ToWhite $ assigned
             |   cw == "/remove" =
                     let [toRemove] = rest
                     in  Right . Remove $ toRemove
-            |   cw == "/move" = if null rest then Left EmptyMessage else Right . SubmitMove . AMove . head $ rest
-            |   cw == "/premove" = Right . SubmitPreMoves $ AMove <$> rest
+            |   cw == "/resign" = Right Resign
             |   cw == "/restore" = Right Restore
+            |   cw == "/start" = Right AutoStart
+            |   cw == "/sub" =
+                    let [substitute] = rest
+                    in  Right . NominateSub $ substitute
             |   otherwise  = Left . NoParse . contents $ msg
 
 data EvaluateError = AlreadyGameInChat | GameDoesNotExist | NotPlayer Int | IllegalMove T.Text | NotYourTurn | EvaluateNotImplemented T.Text | GameStatusDoesNotFit | GameNotStarted | GameFinished Result | UnableToRestore T.Text
 
 renderEvaluateError :: EvaluateError -> T.Text
-renderEvaluateError AlreadyGameInChat = "There is already a game in this chat, you chess-hungry opportunist."
+renderEvaluateError AlreadyGameInChat = "There is already a game in this chat, please resign or abort before starting or loading a new game."
 renderEvaluateError GameDoesNotExist = "There is no game in this chat. Use /new to start a new one."
 renderEvaluateError (IllegalMove move) = T.append "That's an illegal move: " move
 renderEvaluateError (NotPlayer uid) = T.append "This user is not registered as a player in this game: " . T.pack . show $ uid
@@ -134,6 +98,25 @@ nowTheGames = ask >>= \env -> liftIO $ getCurrentTime >>= \now -> pure (now, mem
 
 finishRight :: MonadIO m => m (Either a ())
 finishRight = pure (Right ())
+
+retryOrFail :: Cmd -> Message -> EvaluateError -> Bot (Either EvaluateError ())
+retryOrFail cmd msg error = ask >>= \env -> do
+    let cid = chat_id . chat $ msg
+        tok = token env
+        mvar = memstore env
+        p = pipe env
+    hmap <- liftIO $ readMVar mvar
+    tryRestoreGame p cid >>= \case
+        Left _ -> pure . Left $ error
+        Right game_doc -> case bsonToGame game_doc of
+            Nothing -> pure . Left . UnableToRestore $ "Game found but decoding failed."
+            Just restored ->
+                let updated = HMS.insert cid restored hmap
+                in  do
+                    liftIO $ concurrently_
+                        (sendMessage cid "Restoring from database, hang on..." tok)
+                        (modifyMVar_ mvar $ \_ -> pure updated)
+                    evaluateCmd cmd msg
 
 evaluateCmd :: Cmd -> Message -> Bot (Either EvaluateError ())
 evaluateCmd Abort msg = do
@@ -159,7 +142,7 @@ evaluateCmd Abort msg = do
         Nothing -> sendMessage cid (renderEvaluateError GameDoesNotExist) (token env) >> finishRight
 evaluateCmd AutoStart msg = do
     let cid = chat_id . chat $ msg
-        reply = "This bot can only be used from within a private chat. Create such a chat first, and then invite the bot along with a friend."
+        reply = "/abort - to abort the game (can only do when the game has not started yet)\n/load <fen_string> - copy-paste an FEN-encoded string as argument and you'll be able to resume from the position directly\n/move <your_move> - express your moves using the UCI format, i.e. /move e2e4\n/new - to start a new game\n/resign - to resign from the game (can only do when it's your turn)\n/start - (or /help) to display the list of commands"
     env <- ask
     sendMessage cid reply (token env)
     finishRight
@@ -168,9 +151,7 @@ evaluateCmd Info msg = do
     env <- ask
     games <- liftIO . readMVar . memstore $ env
     case HMS.lookup cid games of
-        Nothing ->
-            let reply = "No ongoing game in this chat " `T.append` "(" `T.append` (T.pack . show $ cid) `T.append` ")"
-            in  sendMessage cid reply (token env) >> finishRight
+        Nothing -> retryOrFail AutoStart msg GameDoesNotExist
         Just game ->
             let fields = [
                     T.pack . show $ createdOn game,
@@ -182,31 +163,27 @@ evaluateCmd Info msg = do
                     ]
                 reply = T.concat $ zipWith (\val lab -> lab `T.append` ": " `T.append` val `T.append` "\n") fields ["Created on", "Room type", "Game has status", "Last move", "Last position", "Time between moves (in seconds)"]
             in  sendMessage cid reply (token env) >> finishRight
-evaluateCmd (Start Pub) msg = pure . Left . EvaluateNotImplemented $ "Games in supergroups not implemented yet. Please use this bot in (private) groups." {- do
-    let reply = "Okay, game set to start in this very group chat. There are 5 settings to set: the time window for joining this game, the max. duration between each move, the min. and max. number of players in each team (colour), finally the colour you will play with (if any). Please use the buttons below to set the game up."
-        cid = chat_id . chat $ msg
+evaluateCmd (Load fen@(FEN fen_str)) msg = do
+    let cid = chat_id . chat $ msg
         uid = maybe 0 user_id (from msg)
     env <- ask
     (now, mvar) <- nowTheGames
-    hmap <- liftIO $ readMVar mvar
-    case HMS.lookup cid hmap of
-        Just game -> sendMessage cid (renderEvaluateError AlreadyGameInChat) (token env) >> finishRight
-        Nothing -> let state = initGameState Pub now uid cid; updated_map = HMS.insert cid state hmap in do
-            sendMessageKeyboard cid reply (token env) (inlineKeyboards $ keyboard state)
-            liftIO $ modifyMVar_ mvar (\_ -> pure updated_map) >> finishRight -}
-evaluateCmd (Start Priv) msg = do
-    let reply = "Both players should now pick a colour and the creator of the game should set a max. duration between each move. Please use the buttons below.\n"
-        cid = chat_id . chat $ msg
-        uid = maybe 0 user_id (from msg)
-    env <- ask
-    (now, mvar) <- nowTheGames
-    hmap <- liftIO $ readMVar mvar
-    let exists = maybe False (\g -> case status g of Finished _ -> False; _ -> True) (HMS.lookup cid hmap)
-    if exists then sendMessage cid (renderEvaluateError AlreadyGameInChat) (token env) >> finishRight
-    else let state = initGameState Priv now uid cid; updated_map = HMS.insert cid state hmap in do
-        sendMessageKeyboard cid reply (token env) (inlineKeyboards $ keyboard state)
-        liftIO $ modifyMVar_ mvar (\_ -> pure updated_map)
-        finishRight
+    games <- liftIO $ readMVar mvar
+    case HMS.lookup cid games of
+        Nothing ->
+            let reply = "No ongoing game in this chat " `T.append` "(" `T.append` (T.pack . show $ cid) `T.append` ")"
+                mb_new_state = loadGameState (initGameState Priv now uid cid) fen
+            in  case mb_new_state of
+                Just new_state ->
+                    let inserted = HMS.insert cid new_state games
+                        reply = "Both players should now pick a colour and the creator of the game should set a max. duration between each move. Please use the buttons below.\n"
+                    in  liftIO $ do
+                        concurrently_
+                            (modifyMVar_ mvar $ \_ -> pure inserted)
+                            (sendMessageKeyboard cid reply (token env) (inlineKeyboards $ keyboard new_state))
+                        finishRight
+                Nothing -> pure . Left . UnableToRestore $ fen_str
+        Just game -> pure . Left $ AlreadyGameInChat
 evaluateCmd Resign msg = do
     let cid = chat_id . chat $ msg
         uid = maybe 0 user_id (from msg)
@@ -258,7 +235,32 @@ evaluateCmd Restore msg = do
                             (modifyMVar_ mvar $ \_ -> pure inserted_hmap)
                             (reqCallCFunc (token env) (endpoint env) svg)
                         finishRight
-evaluateCmd (SubmitMove (AMove move)) msg =
+evaluateCmd (Start Pub) msg = pure . Left . EvaluateNotImplemented $ "Games in supergroups not implemented yet. Please use this bot in (private) groups." {- do
+    let reply = "Okay, game set to start in this very group chat. There are 5 settings to set: the time window for joining this game, the max. duration between each move, the min. and max. number of players in each team (colour), finally the colour you will play with (if any). Please use the buttons below to set the game up."
+        cid = chat_id . chat $ msg
+        uid = maybe 0 user_id (from msg)
+    env <- ask
+    (now, mvar) <- nowTheGames
+    hmap <- liftIO $ readMVar mvar
+    case HMS.lookup cid hmap of
+        Just game -> sendMessage cid (renderEvaluateError AlreadyGameInChat) (token env) >> finishRight
+        Nothing -> let state = initGameState Pub now uid cid; updated_map = HMS.insert cid state hmap in do
+            sendMessageKeyboard cid reply (token env) (inlineKeyboards $ keyboard state)
+            liftIO $ modifyMVar_ mvar (\_ -> pure updated_map) >> finishRight -}
+evaluateCmd cmd@(Start Priv) msg = do
+    let reply = "Both players should now pick a colour and the creator of the game should set a max. duration between each move. Please use the buttons below.\n"
+        cid = chat_id . chat $ msg
+        uid = maybe 0 user_id (from msg)
+    env <- ask
+    (now, mvar) <- nowTheGames
+    hmap <- liftIO $ readMVar mvar
+    let exists = maybe False (\g -> case status g of Finished _ -> False; _ -> True) (HMS.lookup cid hmap)
+    if exists then sendMessage cid (renderEvaluateError AlreadyGameInChat) (token env) >> finishRight
+    else let state = initGameState Priv now uid cid; updated_map = HMS.insert cid state hmap in do
+        sendMessageKeyboard cid reply (token env) (inlineKeyboards $ keyboard state)
+        liftIO $ modifyMVar_ mvar (\_ -> pure updated_map)
+        finishRight
+evaluateCmd cmd@(SubmitMove (AMove move)) msg =
     let cid = chat_id . chat $ msg
         uid = maybe 0 user_id (from msg)
     in do
@@ -267,7 +269,7 @@ evaluateCmd (SubmitMove (AMove move)) msg =
     (now, mvar) <- nowTheGames
     hmap <- liftIO $ readMVar mvar
     case HMS.lookup cid hmap of
-        Nothing -> pure . Left $ GameDoesNotExist
+        Nothing -> retryOrFail cmd msg GameDoesNotExist
         Just game -> case status game of
             InPreparation -> pure . Left $ GameNotStarted
             Started ->

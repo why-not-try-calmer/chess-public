@@ -13,6 +13,7 @@ import           Control.Concurrent
 import           Control.Concurrent.Async (async)
 import           Control.Exception
 import           Control.Monad.Reader
+import           Data.Foldable            (foldl')
 import qualified Data.HashMap.Strict      as HMS
 import           Data.Maybe
 import qualified Data.Text                as T
@@ -105,7 +106,17 @@ startApp = do
                     mongoCreds = mongoCreds
                 }
             in  do
+                -- restoring all games found in database
+                tryRestoreAllGames pipe >>= \case
+                    Left err -> print . renderDbError $ err
+                    Right docs ->
+                        let (games, failed) = toGames docs
+                        in  do
+                            print ("Failed to parse this game-documents" ++ show failed)
+                            putMVar mvar $ HMS.fromList games
+                -- running time control worker thread
                 _ <- timeWorker config
+                -- running Servant application
                 run port . app $ config
     where
         timeWorker config = async (forever $ checkAllTimes config) `catch` \e ->
@@ -114,3 +125,7 @@ startApp = do
             in  do
                 print $ caught_txt ++ show (e :: SomeException) ++ restart_txt
                 timeWorker config
+        toGames docs = foldl' (\(ok, failed) doc -> case bsonToGame doc of
+            Just g  -> ((game_chatid g, g) : ok, failed)
+            Nothing -> (ok, doc : failed)
+            ) ([],[]) docs

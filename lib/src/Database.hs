@@ -7,7 +7,7 @@ module Database where
 import           Chess
 import           Control.Exception
 import           Control.Monad.IO.Class
-import           Data.Foldable
+import           Data.Foldable                  (Foldable (foldl', null))
 import qualified Data.HashMap.Strict            as HMS
 import           Data.Int                       (Int64)
 import           Data.Maybe                     (fromMaybe)
@@ -53,10 +53,10 @@ gameToBson g@GameState{..} =
         side_played = maybe mempty (\case B -> "B" :: T.Text ; W -> "W" :: T.Text) lastSidePlayed
         last_time_moved = maybe mempty toHumanTime lastTimeMoved
         created_on = toHumanTime createdOn
-        time_before_start = maybe mempty (T.pack . show) timeBeforeStart
-        time_for_moves = maybe mempty (T.pack . show) timeforMoves
-        max_players = maybe mempty (T.pack . show) maxPlayers
-        min_players = maybe mempty (T.pack . show) minPlayers
+        time_before_start = maybe 0 floor timeBeforeStart :: Int
+        time_for_moves = maybe 0 floor timeforMoves :: Int
+        max_players = fromMaybe 0 maxPlayers :: Int
+        min_players = fromMaybe 0 minPlayers :: Int
         status' = case status of
             Started      -> "Started"
             Finished res -> T.pack . show $ res
@@ -89,21 +89,36 @@ gameToBson g@GameState{..} =
             "room_type" =: room_type
         ]
 
-data DbError = PipeNotAcquired | DbLoginFailed | NoGameFound Int64 | DeleteAllFailed
+data DbError = PipeNotAcquired | DbLoginFailed | NoGameFound Int64 | NoGamesFound | DeleteAllFailed | FailedToStoreAll
 
 renderDbError :: DbError -> T.Text
 renderDbError PipeNotAcquired = "Failed to open a connection against the database."
 renderDbError DbLoginFailed = "Pipe acquired, but login failed."
 renderDbError DeleteAllFailed = "Unable to delete all games"
 renderDbError (NoGameFound cid) = "This game could not be retrieved from the database: " `T.append` (T.pack . show $ cid)
+renderDbError NoGamesFound = "Unable to retrieve any game from 'games' with the 'status' field set to 'Started'"
+renderDbError FailedToStoreAll = "Unable to store all the games. Have you checked with TimeChecker?"
 
 saveGame :: MonadIO m => Pipe -> Int64 -> GameState -> m ()
 saveGame pipe cid game = runMongo pipe $ upsert (select ["game_chatid" =: cid] "games") (gameToBson game)
+
+--saveAllGames :: MonadIO m => Pipe -> [(Int64, GameState)] -> m ()
+
+saveAllGames :: MonadIO m => Pipe -> [(Int64, GameState)] -> m (Either DbError ())
+saveAllGames pipe updatedGames =
+    let selectors = map (\(cid, game) -> (["game_chatid" =: (cid :: Int64)], gameToBson game, mempty)) updatedGames
+    in  runMongo pipe $ updateAll "games" selectors >>= 
+            \res -> if failed res then pure . Left $ FailedToStoreAll else pure $ Right ()
 
 tryRestoreGame :: MonadIO m => Pipe -> Int64 -> m (Either DbError Document)
 tryRestoreGame pipe cid = runMongo pipe $ findOne (select ["game_chatid" =: cid] "games") >>= \case
     Just doc -> pure . Right $ doc
     Nothing  -> pure . Left . NoGameFound $ cid
+
+tryRestoreAllGames :: MonadIO m => Pipe -> m (Either DbError [Document])
+tryRestoreAllGames pipe = do
+    games <- runMongo pipe $ find (select ["status" =: ("Started" :: T.Text) ] "games") >>= rest
+    if null games then pure . Left $ NoGamesFound else pure . Right $ games
 
 parseToLocale :: String -> UTCTime
 parseToLocale = parseTimeOrError True defaultTimeLocale timeFormat
@@ -113,12 +128,16 @@ bsonToGame doc =
     let last_move = Just . Move =<< (lookup "last_move" doc :: Maybe T.Text)
         last_position = Just . FEN =<< (lookup "last_position" doc :: Maybe T.Text)
         last_side_played = (\v -> if v == "B" then Just B else Just W ) =<< (lookup "last_side_played" doc :: Maybe T.Text)
-        last_time_moved = (Just . parseToLocale . T.unpack) =<< (lookup "last_time_played" doc :: Maybe T.Text)
+        last_time_moved = (Just . parseToLocale . T.unpack) =<< (lookup "last_time_moved" doc :: Maybe T.Text)
         created_on = case lookup "created_on" doc :: Maybe T.Text of
             Just txt -> parseToLocale . T.unpack $ txt
             Nothing  -> parseToLocale ""
-        time_before_start = lookup "time_before_start" doc :: Maybe NominalDiffTime
-        time_between_moves = lookup "time_between_moves" doc :: Maybe NominalDiffTime
+        time_before_start =
+            let t = lookup "time_before_start" doc :: Maybe Int
+            in  secondsToNominalDiffTime . fromIntegral <$> t
+        time_for_moves =
+            let t = lookup "time_for_moves" doc :: Maybe Int
+            in  secondsToNominalDiffTime . fromIntegral <$> t
         max_players = lookup "max_players" doc :: Maybe Int
         min_players = lookup "min_players" doc :: Maybe Int
         white_players = fromMaybe mempty (lookup "white_players" doc :: Maybe [Int])
@@ -159,7 +178,7 @@ bsonToGame doc =
             in  (fromMaybe mempty $ traverse parseAlert notified_w, fromMaybe mempty $ traverse parseAlert notified_b)
         room_type = maybe undefined (\v -> if v == "Priv" then Priv else Pub) (lookup "room_type" doc :: Maybe T.Text)
         keyboard = case room_type of Priv -> PrivK mempty mempty mempty mempty; Pub -> PubK mempty mempty mempty mempty mempty mempty mempty
-    in  Just $ GameState last_move last_position last_side_played last_time_moved created_on time_before_start time_between_moves max_players min_players white_players black_players referees status players_votes game_chatid notified keyboard room_type
+    in  Just $ GameState last_move last_position last_side_played last_time_moved created_on time_before_start time_for_moves max_players min_players white_players black_players referees status players_votes game_chatid notified keyboard room_type
 
 eitherDbErrorOrEffect :: Applicative f => WriteResult -> f (Either DbError ())
 eitherDbErrorOrEffect res = if failed res then pure . Left $ DeleteAllFailed else pure . Right $ ()

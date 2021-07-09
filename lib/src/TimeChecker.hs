@@ -8,14 +8,14 @@ import           Chess
 import           CmdParser
 import           Control.Concurrent
 import           Control.Concurrent.Async
-import           Control.Exception
-import           Control.Monad
 import           Control.Monad.IO.Class   (MonadIO (liftIO))
+import           Data.Foldable            (Foldable (foldl'))
 import qualified Data.HashMap.Strict      as HMS
 import           Data.Int                 (Int64)
 import           Data.Maybe
 import qualified Data.Text                as T
 import           Data.Time
+import           Database                 (saveGame)
 
 renderAlert :: Alert -> T.Text
 renderAlert H1   = "Less than one hour left for "
@@ -56,44 +56,22 @@ checkAllTimes :: MonadIO m => BotConfig -> m ()
 checkAllTimes env = do
     let tok = token env
         mvar = memstore env
+        p = pipe env
     liftIO $ print "checkAllTimes: Started..."
     verdict <- liftIO $ isEmptyMVar mvar
     if verdict then pure () else liftIO $ do
         now <- getCurrentTime
         hmap <- readMVar mvar
-        updated <- mapConcurrently (\g -> case checkGameTime g now of
-            Just Lost ->
-                let (side, name, reason) = if lastSidePlayed g == Just W then (B, "Black", BlackOvertime) else (W, "White", WhiteOvertime)
-                    notification =
-                        let (notified_w, notified_b) = notified g
-                        in  if lastSidePlayed g == Just W then (notified_w, Lost : notified_b) else (Lost : notified_w, notified_b)
-                in  do
-                    sendMessage (game_chatid g) (renderAlert Lost `T.append` name `T.append` " has just won.") tok
-                    pure (g { notified = notification, status = Finished reason } )
-            Just H1 ->
-                let (toPlay, toPlay_txt, notification) = getNotification g H1
-                in  if (isNothing . lastSidePlayed $ g) || H1 `elem` colourAlerts g toPlay then pure g else do
-                    sendMessage (game_chatid g) (renderAlert H1 `T.append` toPlay_txt `T.append` " to make their move, hurry up!") tok
-                    pure $ g { notified = notification }
-            Just M15 ->
-                let (toPlay, toPlay_txt, notification) = getNotification g M15
-                in  if (isNothing . lastSidePlayed $ g) || M15 `elem` colourAlerts g toPlay then pure g else do
-                    sendMessage (game_chatid g) (renderAlert M15 `T.append` toPlay_txt `T.append` " to make their move, hurry up!") tok
-                    pure $ g { notified = notification }
-            Just M5 ->
-                let (toPlay, toPlay_txt, notification) = getNotification g M5
-                in  if (isNothing . lastSidePlayed $ g) || M5`elem` colourAlerts g toPlay then pure g else do
-                    sendMessage (game_chatid g) (renderAlert M5 `T.append` toPlay_txt `T.append` " to make their move, hurry up!") tok
-                    pure $ g { notified = notification }
-            Just M1 ->
-                let (toPlay, toPlay_txt, notification) = getNotification g M1
-                in  if (isNothing . lastSidePlayed $ g) || M1 `elem` colourAlerts g toPlay then pure g else do
-                    sendMessage (game_chatid g) (renderAlert M1 `T.append` toPlay_txt `T.append` " to make their move, hurry up!") tok
-                    pure $ g { notified = notification }
-            Nothing -> pure g
-            Just _ -> pure g
-            ) hmap
-        modifyMVar_ mvar (\_ -> pure updated)
+        let cid_alert_updated = foldl' (\acc g -> case check g now of Just updated_game -> updated_game : acc; Nothing -> acc) [] hmap
+            just_updated = map (\(a,_,b) -> (a,b)) cid_alert_updated
+            merged_new_old = HMS.union (HMS.fromList just_updated) hmap
+        mapConcurrently_ (\(cid, alert, new_state) ->
+            let reply = if lastSidePlayed new_state == Just W then "White" else "Black"
+                thenLost = sendMessage cid (renderAlert Lost `T.append` reply `T.append` " has just lost.") tok
+                thenTimeIsRunning = sendMessage cid (renderAlert alert `T.append` reply `T.append` " to make their move, hurry up!") tok
+            in  case alert of Lost -> thenLost; _ -> thenTimeIsRunning
+            ) cid_alert_updated
+        modifyMVar_ mvar (\_ -> pure merged_new_old)
         liftIO $ print "checkAllTimes: Sleeping for 5 minutes."
         threadDelay 300000000
     where
@@ -102,6 +80,36 @@ checkAllTimes env = do
             in  if lastSidePlayed game == Just W then (B, "Black", (notified_w, alert : notified_b)) else (W, "White", (alert : notified_w, notified_b))
         colourAlerts game W = fst $ notified game
         colourAlerts game B = snd $ notified game
+        check g now = case checkGameTime g now of
+            Just Lost ->
+                let (name, reason) = if lastSidePlayed g == Just W then ("White", BlackOvertime) else ("Black", WhiteOvertime)
+                    notification =
+                        let (notified_w, notified_b) = notified g
+                        in  if lastSidePlayed g == Just W then (notified_w, Lost : notified_b) else (Lost : notified_w, notified_b)
+                    new_state = g { notified = notification, status = Finished reason }
+                in  Just (game_chatid g, Lost, new_state)
+            Just H1 ->
+                let (toPlay, toPlay_txt, notification) = getNotification g H1
+                    new_state = g { notified = notification }
+                in  if (isNothing . lastSidePlayed $ g) || H1 `elem` colourAlerts g toPlay then Nothing else
+                    Just (game_chatid g, H1, new_state)
+            Just M15 ->
+                let (toPlay, toPlay_txt, notification) = getNotification g M15
+                    new_state = g { notified = notification }
+                in  if (isNothing . lastSidePlayed $ g) || M15 `elem` colourAlerts g toPlay then Nothing else
+                    Just (game_chatid g, M15, new_state)
+            Just M5 ->
+                let (toPlay, toPlay_txt, notification) = getNotification g M5
+                    new_state = g { notified = notification }
+                in  if (isNothing . lastSidePlayed $ g) || M5`elem` colourAlerts g toPlay then Nothing else
+                    Just (game_chatid g, M5, new_state)
+            Just M1 ->
+                let (toPlay, toPlay_txt, notification) = getNotification g M1
+                    new_state = g { notified = notification }
+                in  if (isNothing . lastSidePlayed $ g) || M1 `elem` colourAlerts g toPlay then Nothing else
+                    Just (game_chatid g, M1, new_state)
+            Nothing -> Nothing
+            Just _ -> Nothing
 
 {-
 --

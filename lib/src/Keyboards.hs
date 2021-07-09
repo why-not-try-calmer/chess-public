@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
-{-# LANGUAGE StrictData #-}
+{-# LANGUAGE StrictData        #-}
 
 module Keyboards where
 

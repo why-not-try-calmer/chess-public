@@ -14,20 +14,6 @@ import           Game.Chess
 import           Keyboards              (Keyboard, makePrivStartKeyboard,
                                          makePubStartKeyboard)
 
-{-
-
-Setup
-- user sets up the game, becomes referee by default
-- user sets up:
-    - a time window for joining
-    - a time step for each move
-    - a minimal and optionnally a maximum number of players for each team
-- other users join B or W
-- when there is the same number of players in each team, the referee can start the game
-- if there is a different number any team has an odd number of players
-
--}
-
 startFEN :: T.Text
 startFEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -35,7 +21,7 @@ newtype Move = Move T.Text deriving (Show)
 newtype FEN = FEN T.Text deriving (Show)
 newtype BadParse = BadParse T.Text
 data IllegalMove = CheckedKing Move | WouldCheckKing Move | LostCastlingRights Move | PieceDoesNotMove Move | PlainIllegal Move
-data ChessError = ErrorBadParse BadParse | ErrorIllegalMove IllegalMove
+data ChessError = ErrorBadParse BadParse | ErrorIllegalMove IllegalMove | NeedPromotion T.Text
 data Result = WhiteIsMate | BlackIsMate | Pat | PatByRepetition | WhiteResigned | BlackResigned | WhiteOvertime | BlackOvertime deriving (Show, Eq)
 type RestoreMessageId = Int
 data Status = InPreparation | Ready | Started | Finished Result deriving (Show, Eq)
@@ -86,13 +72,13 @@ labels = [
     "last_time_moved",
     "created_on",
     "time_before_start",
-    "time_between_moves",
+    "time_for_moves",
     "max_players",
     "min_players",
     "white_players",
     "black_players",
     "referees",
-    "status", --
+    "status",
     "players_votes",
     "game_chatid",
     "notified",
@@ -104,6 +90,13 @@ initGameState :: RoomType -> UTCTime -> Int -> Int64 -> GameState
 initGameState Pub now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid mempty makePubStartKeyboard Pub
 initGameState Priv now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid mempty makePrivStartKeyboard Priv
 
+loadGameState :: GameState -> FEN -> Maybe GameState
+loadGameState game fen@(FEN fen_str) = case fromFEN . T.unpack $ fen_str of
+    Just pos -> case color pos of
+        White -> Just $ game { lastPosition = Just fen, lastSidePlayed = Just B, lastMove = Nothing  }
+        Black -> Just $ game { lastPosition = Just fen, lastSidePlayed = Just W, lastMove = Nothing  }
+    Nothing -> Nothing
+
 renderChessError :: ChessError -> T.Text
 renderChessError (ErrorBadParse (BadParse txt)) = "Unable to parse this move request: " `T.append` txt
 renderChessError (ErrorIllegalMove (CheckedKing (Move mov))) = "Illegal! You cannot play " `T.append` mov `T.append` " while your King is checked!"
@@ -111,6 +104,7 @@ renderChessError (ErrorIllegalMove (WouldCheckKing (Move mov))) = "Illegal! Play
 renderChessError (ErrorIllegalMove (LostCastlingRights (Move mov))) = "Illegal! You cannot play " `T.append` mov `T.append` " as you lost your castling rights earlier in the game."
 renderChessError (ErrorIllegalMove (PieceDoesNotMove (Move mov))) = "Illegal! The piece cannot accomplish the move :" `T.append` mov `T.append` " . This is just not how chess works."
 renderChessError (ErrorIllegalMove (PlainIllegal (Move mov))) = "This move is illegal: " `T.append` mov
+renderChessError (NeedPromotion mv_str) = "To make this move legal, please append 'q', 'r', 'b' or 'n' to you move to promote in moving. Example: /move " `T.append` mv_str `T.append` "q to promote the pawn to a Queen."
 
 renderResult :: Result -> T.Text
 renderResult WhiteResigned = "White has just resigned! Congratulations to Black!"
@@ -126,7 +120,9 @@ tryMove Nothing mv = tryMove (Just . FEN $ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R
 tryMove (Just (FEN fen_t)) mv = case fromFEN (T.unpack fen_t) of
     Just pos -> case fromUCI pos (T.unpack mv) of
         Just legal -> Right (Move mv, FEN . T.pack . toFEN . unsafeDoPly pos $ legal)
-        Nothing    -> Left . ErrorIllegalMove . PlainIllegal . Move $ mv
+        Nothing ->
+            let legal = map (T.pack . show) (legalPlies pos)
+            in  if any (T.isPrefixOf mv) legal then Left . NeedPromotion $ fen_t else Left . ErrorIllegalMove . PlainIllegal . Move $ mv
     Nothing -> Left . ErrorBadParse . BadParse $ "Failed to parse this FEN string: " `T.append` fen_t
 
 timeFormat :: String
