@@ -3,22 +3,15 @@
 {-# LANGUAGE StrictData        #-}
 
 module CloudFunctions where
-
-import           Chess                      (FEN (FEN), Move (Move),
-                                             renderChessError, tryMove)
-import           Control.Monad.IO.Class     (MonadIO (liftIO))
-import           Control.Monad.Reader.Class (MonadReader (ask))
+import           Control.Monad.IO.Class (MonadIO (liftIO))
 import           Data.Aeson
-import           Data.Int                   (Int64)
-import qualified Data.Text                  as T
-import           GHC.Generics               (Generic)
+import qualified Data.Text              as T
+import           GHC.Generics           (Generic)
 import           Network.HTTP.Req
-import qualified Network.HTTP.Req
-import           TgramAPIJson               (ChatId)
-import           TgramAPITypes              (toJsonDrop)
+import           TgramAPITypes          (ChatId, toJsonDrop)
 
 data SVGToPNG = SVGToPNG {
-    svg_chat_id :: Int64,
+    svg_chat_id :: ChatId,
     svg_move    :: Maybe T.Text,
     svg_fen     :: T.Text
 } deriving (Show, Generic)

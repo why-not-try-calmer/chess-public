@@ -1,31 +1,20 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE StrictData        #-}
 
 module Chess where
 
+import           AppTypes
 import           Control.Monad.IO.Class (MonadIO (liftIO))
 import qualified Data.HashMap.Strict    as HMS
-import           Data.Int               (Int64)
 import qualified Data.Text              as T
 import           Data.Time              (NominalDiffTime, UTCTime (UTCTime),
                                          defaultTimeLocale, formatTime,
                                          getCurrentTime)
 import           Game.Chess
-import           Keyboards              (Keyboard, makePrivStartKeyboard,
-                                         makePubStartKeyboard)
+import           Keyboards
+import           TgramAPITypes          (ChatId, UserId)
 
 startFEN :: T.Text
 startFEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-
-newtype Move = Move T.Text deriving (Show)
-newtype FEN = FEN T.Text deriving (Show)
-newtype BadParse = BadParse T.Text
-data IllegalMove = CheckedKing Move | WouldCheckKing Move | LostCastlingRights Move | PieceDoesNotMove Move | PlainIllegal Move
-data ChessError = ErrorBadParse BadParse | ErrorIllegalMove IllegalMove | NeedPromotion T.Text
-data Result = WhiteIsMate | BlackIsMate | Pat | PatByRepetition | WhiteResigned | BlackResigned | WhiteOvertime | BlackOvertime deriving (Show, Eq)
-type RestoreMessageId = Int
-data Status = InPreparation | Ready | Started | Finished Result deriving (Show, Eq)
-data RoomType = Priv | Pub deriving (Show)
 
 renderStatus :: Status -> T.Text
 renderStatus InPreparation = "Game is still in preparation."
@@ -40,30 +29,6 @@ renderStatus (Finished res)
     | res == BlackResigned = "Black resigned; White won!"
     | otherwise = "unknown status"
 
-data Side = B | W deriving (Eq, Show)
-data Alert = H1 | M30 | M15 | M5 | M1 | S30 | S10 | Lost deriving (Eq, Show)
-
-data GameState = GameState {
-    lastMove        :: Maybe Move,
-    lastPosition    :: Maybe FEN,
-    lastSidePlayed  :: Maybe Side,
-    lastTimeMoved   :: Maybe UTCTime,
-    createdOn       :: UTCTime,
-    timeBeforeStart :: Maybe NominalDiffTime, -- only in pub games
-    timeforMoves    :: Maybe NominalDiffTime,
-    maxPlayers      :: Maybe Int, -- only in pub games
-    minPlayers      :: Maybe Int, -- only in pub games
-    whitePlayers    :: [Int],
-    blackPlayers    :: [Int],
-    referees        :: [Int],
-    status          :: Status,
-    playersVotes    :: Maybe (HMS.HashMap Int Move), -- only in pub games
-    game_chatid     :: Int64,
-    notified        :: ([Alert], [Alert]), -- alerts for W, B
-    keyboard        :: Keyboard,
-    roomType        :: RoomType
-} deriving (Show)
-
 labels :: [T.Text]
 labels = [
     "last_move",
@@ -71,7 +36,6 @@ labels = [
     "last_side_played",
     "last_time_moved",
     "created_on",
-    "time_before_start",
     "time_for_moves",
     "max_players",
     "min_players",
@@ -86,9 +50,9 @@ labels = [
     "room_type"
     ]
 
-initGameState :: RoomType -> UTCTime -> Int -> Int64 -> GameState
-initGameState Pub now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid mempty makePubStartKeyboard Pub
-initGameState Priv now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid mempty makePrivStartKeyboard Priv
+initGameState :: RoomType -> UTCTime -> UserId -> ChatId -> GameState
+initGameState Pub now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid mempty makePubStartKeyboard Pub
+initGameState Priv now uid cid = GameState Nothing Nothing Nothing Nothing now Nothing Nothing Nothing mempty mempty [uid] InPreparation Nothing cid mempty makePrivStartKeyboard Priv
 
 loadGameState :: GameState -> FEN -> Maybe GameState
 loadGameState game fen@(FEN fen_str) = case fromFEN . T.unpack $ fen_str of
@@ -107,6 +71,7 @@ renderChessError (ErrorIllegalMove (PlainIllegal (Move mov))) = "This move is il
 renderChessError (NeedPromotion mv_str) = "To make this move legal, please append 'q', 'r', 'b' or 'n' to you move to promote in moving. Example: /move " `T.append` mv_str `T.append` "q to promote the pawn to a Queen."
 
 renderResult :: Result -> T.Text
+renderResult Aborted = "The game was aborted."
 renderResult WhiteResigned = "White has just resigned! Congratulations to Black!"
 renderResult BlackResigned = "Black has just resigned! Congratulations to White!"
 renderResult WhiteIsMate = "White are mate! Congratulations to Black!"
@@ -114,8 +79,6 @@ renderResult BlackIsMate = "Black are mate! Congratulations to Black!"
 renderResult _ = "This result has not been implemented yet."
 
 tryMove :: Maybe FEN -> T.Text -> Either ChessError (Move, FEN)
-{- Maps a position and move into a subsequent position. The position argument should be fed
-a Nothing when the game is starting. -}
 tryMove Nothing mv = tryMove (Just . FEN $ "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") mv
 tryMove (Just (FEN fen_t)) mv = case fromFEN (T.unpack fen_t) of
     Just pos -> case fromUCI pos (T.unpack mv) of

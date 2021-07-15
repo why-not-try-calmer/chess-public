@@ -25,11 +25,13 @@ toJsonDrop prefix = genericToJSON defaultOptions {
 parseJsonDrop :: forall a.(Generic a, GFromJSON Zero (Rep a)) => Int -> Value -> Parser a
 parseJsonDrop prefix = genericParseJSON defaultOptions { fieldLabelModifier = drop prefix }
 
+type UserId = Int64
+type ChatId = Int64
 
 -- | This object represents a Telegram user or bot.
 data User = User
   {
-    user_id            :: Int        -- ^ Unique identifier for this user or bot
+    user_id            :: UserId        -- ^ Unique identifier for this user or bot
   , user_is_bot        :: Bool -- ^ True, if this user is a bot
   , user_first_name    :: Text       -- ^ User‘s or bot’s first name
   , user_last_name     :: Maybe Text -- ^ User‘s or bot’s last name
@@ -85,7 +87,7 @@ instance FromJSON Contact where
 
 -- | This object represents a chat.
 data Chat = Chat
-    { chat_id                           :: Int64
+    { chat_id                           :: ChatId
     -- ^ Unique identifier for this chat.
     -- This number may be greater than 32 bits and some programming languages
     -- may have difficulty/silent defects in interpreting it.

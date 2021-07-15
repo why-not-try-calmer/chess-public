@@ -1,36 +1,22 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
-{-# LANGUAGE StrictData        #-}
 
 module Keyboards where
 
-import           Data.Foldable (Foldable (foldl'))
-import           Data.Int      (Int64)
-import qualified Data.Text     as T
-import           TgramAPITypes (InlineKeyboardButton (InlineKeyboardButton, ikb_callback_data),
-                                InlineKeyboardMarkup (InlineKeyboardMarkup, inline_keyboard),
-                                inlineKeyboardButton)
-
-data Keyboard =
-    PrivK {
-    side_row        :: [InlineKeyboardButton],
-    label_time_move :: [InlineKeyboardButton],
-    time_move_row1  :: [InlineKeyboardButton],
-    time_move_row2  :: [InlineKeyboardButton]
-    } |
-    PubK {
-    side_row        :: [InlineKeyboardButton],
-    label_time_move :: [InlineKeyboardButton],
-    time_move_row1  :: [InlineKeyboardButton],
-    time_move_row2  :: [InlineKeyboardButton],
-    time_move_row3  :: [InlineKeyboardButton],
-    label_start     :: [InlineKeyboardButton],
-    time_start_row  :: [InlineKeyboardButton]
-} deriving (Show)
+import           AppTypes
+import qualified Data.HashMap.Strict as HMS
+import           Data.List
+import           Data.Maybe          (fromMaybe)
+import           Data.Ord
+import qualified Data.Text           as T
+import           TgramAPITypes       (InlineKeyboardButton (ikb_callback_data),
+                                      InlineKeyboardMarkup (InlineKeyboardMarkup),
+                                      inlineKeyboardButton)
 
 inlineKeyboards :: Keyboard -> InlineKeyboardMarkup
 inlineKeyboards PrivK{..} = InlineKeyboardMarkup [side_row, label_time_move, time_move_row1, time_move_row2]
-inlineKeyboards PubK{..} = InlineKeyboardMarkup [side_row, label_time_move, time_move_row1, time_move_row2, time_move_row3, label_start, time_start_row]
+inlineKeyboards PubK{..} = InlineKeyboardMarkup [side_row, label_time_move, time_move_row1, time_move_row2, time_move_row3, start_button]
+inlineKeyboards Moves{..} = InlineKeyboardMarkup [moves]
 
 makePrivStartKeyboard :: Keyboard
 makePrivStartKeyboard =
@@ -70,58 +56,19 @@ makePubStartKeyboard =
             (inlineKeyboardButton "2 days") { ikb_callback_data = Just "2d"},
             (inlineKeyboardButton "3 days") { ikb_callback_data = Just "3d"}
             ]
-        label_start = [(inlineKeyboardButton "~ Max. time for joining a team ~") { ikb_callback_data = Just "_"}]
-        time_start = [
-            (inlineKeyboardButton "5 min") { ikb_callback_data = Just "s5m"},
-            (inlineKeyboardButton "30 min") { ikb_callback_data = Just "s30m"},
-            (inlineKeyboardButton "1 hour") { ikb_callback_data = Just "s1h"}
-            ]
-    in  PubK side label_moves time_moves1 time_moves2 time_moves3 label_start time_start
+        start_button = []
+    in  PubK side label_moves time_moves1 time_moves2 time_moves3 start_button
 
-data Side = W | B
+makeStartButton :: [InlineKeyboardButton]
+makeStartButton = [(inlineKeyboardButton "START") { ikb_callback_data = Just "start"}]
 
-data BalanceIssues = TooLow Side | TooHigh Side | Ok
-
-renderBalanceIssues :: BalanceIssues -> T.Text
-renderBalanceIssues (TooLow W) = "White does not clear the threshold for minimal nb. of players. "
-renderBalanceIssues (TooLow B) = "Black does not clear the threshold for minimal nb. of players. "
-renderBalanceIssues (TooHigh W) = "White overcomes the threshold for maximal nb. of players. "
-renderBalanceIssues (TooHigh B) = "Black overcomes the threshold for maximal nb. of players. "
-renderBalanceIssues Ok = mempty
-
-foldRenderBalanceIssues :: [BalanceIssues] -> T.Text
-foldRenderBalanceIssues = foldl' (\acc val -> acc `T.append` renderBalanceIssues val) mempty
-
-findBalance :: ([Int], [Int]) -> Maybe Int -> Maybe Int -> T.Text
-findBalance (white, black) (Just minthresh) (Just maxthresh) =
-    let summed = length white + length black
-        w_min_clear = if length white - minthresh < 0 then TooLow W else Ok
-        b_min_clear = if length black - minthresh < 0 then TooLow B else Ok
-        w_max_clear = if maxthresh - length white < 0 then TooHigh W else Ok
-        b_max_clear = if maxthresh - length black < 0 then TooHigh B else Ok
-        issues = [w_min_clear, b_min_clear, w_max_clear, b_max_clear]
-    in  foldRenderBalanceIssues issues
-findBalance (white, black) Nothing (Just maxthresh) =
-    let summed = length white + length black
-        w_max_clear = if maxthresh - length white < 0 then TooHigh W else Ok
-        b_max_clear = if maxthresh - length black < 0 then TooHigh B else Ok
-        issues = [w_max_clear, b_max_clear]
-    in  foldRenderBalanceIssues issues
-findBalance (white, black) (Just minthresh) Nothing =
-    let summed = length white + length black
-        w_min_clear = if length white - minthresh < 0 then TooLow W else Ok
-        b_min_clear = if length black - minthresh < 0 then TooLow B else Ok
-        issues = [w_min_clear, b_min_clear]
-    in  foldRenderBalanceIssues issues
-findBalance (white, black) Nothing Nothing =
-    let w_txt = T.pack . show . length $ white
-        b_txt = T.pack . show . length $ black
-    in  "Ready to start whenever you want as " `T.append` w_txt `T.append` " vs " `T.append` b_txt
-
-type RestoreGameButton = [InlineKeyboardButton]
-
-makeRestoreGameButton :: Maybe (T.Text, T.Text) -> InlineKeyboardMarkup
-makeRestoreGameButton Nothing = InlineKeyboardMarkup [[(inlineKeyboardButton "Restore the game!") { ikb_callback_data = Just mempty }]]
-makeRestoreGameButton (Just (fen, mv)) =
-    let txt = fen `T.append` ":" `T.append` mv
-    in  InlineKeyboardMarkup [[(inlineKeyboardButton "Restore the game!") { ikb_callback_data = Just txt }]]
+votingKeyboard :: GameState -> InlineKeyboardMarkup
+votingKeyboard GameState{..} =
+    let votes = fromMaybe HMS.empty playersVotes
+        get_side uid = if uid `elem` whitePlayers then W else B
+        voted_moves = HMS.toList $ HMS.foldl' (\acc (Move mv) -> case HMS.lookup mv acc of
+            Nothing -> HMS.insert mv (1 :: Int) acc
+            Just _  -> HMS.update (\count -> pure (count + 1)) mv acc) HMS.empty votes
+        sorted = sortOn (Down . snd) voted_moves
+        buttons = map (\(mv, count) -> (inlineKeyboardButton (mv `T.append` " (" `T.append` (T.pack . show $ count) `T.append` ")")) { ikb_callback_data = Just . T.append mv $ "v"  }) sorted
+    in  inlineKeyboards $ Moves buttons
